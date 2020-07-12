@@ -987,7 +987,7 @@ namespace P.sb3 {
   // Loads a .sb3 file
   export class SB3FileLoader extends BaseSB3Loader {
     private buffer: ArrayBuffer;
-    private zip: JSZip.Zip;
+    private zip: JSZip;
 
     constructor(buffer: ArrayBuffer) {
       super();
@@ -996,7 +996,11 @@ namespace P.sb3 {
 
     getAsText(path: string) {
       const task = this.addTask(new P.io.Manual());
-      return this.zip.file(path).async('text')
+      const file = this.zip.file(path);
+      if (!file) {
+        throw new Error('cannot find file as text: ' + path);
+      }
+      return file.async('text')
         .then((response) => {
           task.markComplete();
           return response;
@@ -1005,7 +1009,11 @@ namespace P.sb3 {
 
     getAsArrayBuffer(path: string) {
       const task = this.addTask(new P.io.Manual());
-      return this.zip.file(path).async('arrayBuffer')
+      const file = this.zip.file(path);
+      if (!file) {
+        throw new Error('cannot find file as arraybuffer: ' + path);
+      }
+      return file.async('arraybuffer')
         .then((response) => {
           task.markComplete();
           return response;
@@ -1014,7 +1022,11 @@ namespace P.sb3 {
 
     getAsBase64(path: string) {
       const task = this.addTask(new P.io.Manual());
-      return this.zip.file(path).async('base64')
+      const file = this.zip.file(path);
+      if (!file) {
+        throw new Error('cannot find file as base64: ' + path);
+      }
+      return file.async('base64')
         .then((response) => {
           task.markComplete();
           return response;
@@ -1190,8 +1202,9 @@ namespace P.sb3.compiler {
     postcompile?(compiler: Compiler, source: string, hat: SB3Block): string;
     /**
      * Optionally handle what happens before compilation begins.
+     * The result of this will be added to the script's source before the script begins.
      */
-    precompile?(compiler: Compiler, hat: SB3Block): void;
+    precompile?(compiler: Compiler, hat: SB3Block): string;
   };
 
   export type InputType = 'string' | 'boolean' | 'number' | 'any' | 'list';
@@ -1287,6 +1300,18 @@ namespace P.sb3.compiler {
      */
     asType(input: string, type: InputType): string {
       return this.compiler.asType(input, type)
+    }
+
+    /**
+     * Evaluate a compiled input.
+     * May throw if there is an error evaluating the input.
+     * As the input is always evaluated once, changes will not be reflected.
+     * The input will have access to runtime objects and data, including the target sprite and runtime methods.
+     * @param input The input to evaluate.
+     */
+    evaluateInputOnce(input: CompiledInput): any {
+      const fn = P.runtime.scopedEval(`(function() { return ${input}; })`);
+      return this.target.stage.runtime.evaluateExpression(this.target, fn);
     }
   }
 
@@ -1897,13 +1922,14 @@ namespace P.sb3.compiler {
 
       this.state = this.getNewState();
 
-      if (hatCompiler.precompile) {
-        hatCompiler.precompile(this, hat);
-      }
-
       // There is always a label placed at the beginning of the script.
       // If you're clever, you may be able to remove this at some point.
       let script = `{{${this.labelCount++}}}`;
+
+      if (hatCompiler.precompile) {
+        script += hatCompiler.precompile(this, hat);
+      }
+
       script += this.compileStack(startingBlock);
 
       // If a block wants to do some changes to the script after script generation but before compilation, let it.
@@ -1920,8 +1946,8 @@ namespace P.sb3.compiler {
         this.target.fns[label] = P.runtime.createContinuation(parsedScript.slice(parseResult.labels[label]));
       }
 
-      const startingFn = this.target.fns[startFn];
-      const util = new HatUtil(this, hat, startingFn);
+      const startingFunction = this.target.fns[startFn];
+      const util = new HatUtil(this, hat, startingFunction);
       hatCompiler.handle(util);
 
       if (P.config.debug) {
@@ -3175,6 +3201,53 @@ namespace P.sb3.compiler {
       util.target.listeners.whenGreenFlag.push(util.startingFunction);
     },
   };
+  hatLibrary['event_whengreaterthan'] = {
+    precompile(compiler, hat) {
+      const WHENGREATERTHANMENU = compiler.getField(hat, 'WHENGREATERTHANMENU');
+      const VALUE = compiler.compileInput(hat, 'VALUE', 'number');
+
+      let executeWhen = 'false';
+      let stallUntil = 'false';
+      switch (WHENGREATERTHANMENU) {
+        case 'TIMER':
+          executeWhen = `(runtime.now() - runtime.timerStart) / 1000 > ${VALUE}`;
+          // wait until the timer was reset or the value changed to be less than the timer
+          // waiting until a reset matters for some low numbers where timer might never actually be eg. 0 in some rare instances
+          stallUntil = `runtime.timerStart !== R.timerStart || (runtime.now() - runtime.timerStart) / 1000 <= ${VALUE}`;
+          break;
+        case 'LOUDNESS':
+          compiler.target.stage.initLoudness();
+          executeWhen = `self.microphone.getLoudness() > ${VALUE}`;
+          stallUntil = `self.microphone.getLoudness() <= ${VALUE}`;
+          break;
+        default:
+          console.warn('unknown WHENGREATERTHANMENU', WHENGREATERTHANMENU);
+      }
+
+      let source = '';
+      source += 'if (!R.init) { R.init = true; R.stalled = false; }\n';
+      source += `if (R.stalled && (${stallUntil})) { R.stalled = false; }\n`;
+      source += `else if (!R.stalled && (${executeWhen})) { R.stalled = true;\n`;
+      // if/else will be finished in postcompile
+      return source;
+    },
+    postcompile(compiler, source, hat) {
+      const WHENGREATERTHANMENU = compiler.getField(hat, 'WHENGREATERTHANMENU');
+      switch (WHENGREATERTHANMENU) {
+        case 'TIMER':
+          // store the timerStart, this is used in precompile to determine whether the timer was reset
+          source += 'R.timerStart = runtime.timerStart;\n';
+          break;
+      }
+      // finish the if/else started in precompile
+      source += '}\n';
+      source += `forceQueue(${compiler.target.fns.length});`;
+      return source;
+    },
+    handle(util) {
+      util.target.listeners.whenGreenFlag.push(util.startingFunction);
+    },
+  };
   hatLibrary['event_whenkeypressed'] = {
     handle(util) {
       const KEY_OPTION = util.getField('KEY_OPTION');
@@ -3201,12 +3274,20 @@ namespace P.sb3.compiler {
       util.target.listeners.whenClicked.push(util.startingFunction);
     },
   };
+  function makeymakeyParseKey(key: string): number | 'any' {
+    key = key.toLowerCase();
+    if (key === 'up' || key === 'down' || key === 'left' || key === 'right') {
+      return P.runtime.getKeyCode(key + ' arrow') as number;
+    }
+    return P.runtime.getKeyCode(key);
+  }
   hatLibrary['makeymakey_whenMakeyKeyPressed'] = {
     handle(util) {
       const KEY = util.getInput('KEY', 'string');
       try {
-        const value = P.runtime.scopedEval(KEY.source);
-        var keyCode = P.runtime.getKeyCode(value);
+        const keyValue = '' + util.evaluateInputOnce(KEY);
+        if (typeof keyValue !== 'string') throw new Error('cannot accept type: ' + typeof keyValue);
+        var keyCode = makeymakeyParseKey(keyValue);
       } catch (e) {
         util.compiler.warn('makeymakey key generation error', e);
         return;
@@ -3227,23 +3308,24 @@ namespace P.sb3.compiler {
     handle(util) {
       const SEQUENCE = util.getInput('SEQUENCE', 'string');
       try {
-        var sequence = P.runtime.scopedEval(SEQUENCE.source);
+        var sequence = '' + util.evaluateInputOnce(SEQUENCE);
       } catch (e) {
-        util.compiler.warn('makeymakey sequence generation error', e);
+        util.compiler.warn('makeymakey key generation error', e);
         return;
       }
-      const ARROWS = ['up', 'down', 'left', 'right'];
-      const keys = sequence.toLowerCase().split(' ')
-        .map((key) => {
-          if (ARROWS.indexOf(key) > -1) {
-            return P.runtime.getKeyCode(key + ' arrow');
-          } else {
-            return P.runtime.getKeyCode(key);
-          }
-        });
+      const keys = sequence
+        .toLowerCase()
+        .split(' ')
+        .map((key: string) => makeymakeyParseKey(key));
+      // prevent the use of "any"
+      if (keys.some((i) => typeof i !== 'number')) {
+        util.compiler.warn('makeymakey whenCodePressed found unexpected string in sequence');
+        return;
+      }
       const targetFunction = util.startingFunction;
       let sequenceIndex = 0;
       for (let key = 128; key--;) {
+        // `key` is captured in this function's body
         util.target.listeners.whenKeyPressed[key].push(function() {
           const expectedKey = keys[sequenceIndex];
           if (key !== expectedKey) {
@@ -3285,6 +3367,7 @@ namespace P.sb3.compiler {
       if (warp) {
         compiler.state.isWarp = true;
       }
+      return '';
     },
   };
   hatLibrary['speech2text_whenIHearHat'] = {

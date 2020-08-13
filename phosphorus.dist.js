@@ -758,9 +758,14 @@ var P;
                 };
             }
             setSoundFilter(name, value) {
+                value = value || 0;
                 switch (name.toLowerCase()) {
                     case 'pitch':
                         this.soundFilters.pitch = value;
+                        if (this.soundFilters.pitch > 360)
+                            this.soundFilters.pitch = 360;
+                        if (this.soundFilters.pitch < -360)
+                            this.soundFilters.pitch = -360;
                         break;
                 }
             }
@@ -768,6 +773,10 @@ var P;
                 switch (name.toLowerCase()) {
                     case 'pitch':
                         this.soundFilters.pitch += value;
+                        if (this.soundFilters.pitch > 360)
+                            this.soundFilters.pitch = 360;
+                        if (this.soundFilters.pitch < -360)
+                            this.soundFilters.pitch = -360;
                         break;
                 }
             }
@@ -838,7 +847,7 @@ var P;
                 stage.prompt.focus();
             }
             say(text, thinking = false) {
-                text = text.toString();
+                text = '' + text;
                 if (text.length === 0) {
                     this.saying = false;
                     if (this.bubbleContainer)
@@ -1109,10 +1118,14 @@ var P;
                 const key = e.key;
                 switch (key) {
                     case 'Enter': return 13;
-                    case 'ArrowLeft': return 37;
-                    case 'ArrowUp': return 38;
-                    case 'ArrowRight': return 39;
-                    case 'ArrowDown': return 40;
+                    case 'ArrowLeft':
+                    case 'Left': return 37;
+                    case 'ArrowUp':
+                    case 'Up': return 38;
+                    case 'ArrowRight':
+                    case 'Right': return 39;
+                    case 'ArrowDown':
+                    case 'Down': return 40;
                 }
                 if (key.length !== 1) {
                     return -1;
@@ -2151,23 +2164,24 @@ var P;
                 super(...arguments);
                 this.aborted = false;
             }
-            try(handle) {
-                return new Promise((resolve, reject) => {
-                    handle()
-                        .then((response) => resolve(response))
-                        .catch((err) => {
+            async try(handle) {
+                const MAX_ATTEMPST = 4;
+                let lastErr;
+                for (let i = 0; i < MAX_ATTEMPST; i++) {
+                    try {
+                        return await handle();
+                    }
+                    catch (err) {
                         if (this.aborted) {
-                            reject(err);
-                            return;
+                            throw err;
                         }
-                        console.warn(`First attempt to ${this.getRetryWarningDescription()} failed, trying again.`, err);
-                        setTimeout(() => {
-                            handle()
-                                .then((response) => resolve(response))
-                                .catch((err) => reject(err));
-                        }, 2000);
-                    });
-                });
+                        lastErr = err;
+                        const retryIn = 2 ** i * 500 * Math.random() + 50;
+                        console.warn(`Attempt #${i + 1} to ${this.getRetryWarningDescription()} failed, trying again in ${retryIn}ms`, err);
+                        await P.utils.sleep(retryIn);
+                    }
+                }
+                throw lastErr;
             }
             getRetryWarningDescription() {
                 return 'complete task';
@@ -2258,7 +2272,7 @@ var P;
             }
             load(type) {
                 this.responseType = type;
-                return this.try(() => requestThrottler.run(() => this._load()));
+                return requestThrottler.run(() => this.try(() => this._load()));
             }
             getRetryWarningDescription() {
                 return `download ${this.url}`;
@@ -2302,7 +2316,7 @@ var P;
                 });
             }
             load() {
-                return this.try(() => requestThrottler.run(() => this._load()));
+                return requestThrottler.run(() => this.try(() => this._load()));
             }
             getRetryWarningDescription() {
                 return `download image ${this.src}`;
@@ -2826,6 +2840,10 @@ var P;
             });
         }
         utils.settled = settled;
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+        utils.sleep = sleep;
     })(utils = P.utils || (P.utils = {}));
 })(P || (P = {}));
 var P;
@@ -2954,9 +2972,6 @@ var P;
                 this.onoptionschange = new Slot();
                 this.MAGIC = {
                     LARGE_Z_INDEX: '9999999999',
-                    CLOUD_HISTORY_API: 'https://scratch.garbomuffin.com/cloud-proxy/logs/$id?limit=100',
-                    PROJECT_API: 'https://projects.scratch.mit.edu/$id',
-                    CLOUD_DATA_SERVER: 'wss://stratus.garbomuffin.com',
                 };
                 this.stage = null;
                 this.projectMeta = null;
@@ -3322,7 +3337,7 @@ var P;
                 }
             }
             async getCloudVariablesFromLogs(id) {
-                const data = await new P.io.Request(this.MAGIC.CLOUD_HISTORY_API.replace('$id', id)).load('json');
+                const data = await new P.io.Request(this.options.cloudHistoryHost.replace('$id', id)).load('json');
                 const variables = Object.create(null);
                 for (const entry of data.reverse()) {
                     const { verb, name, value } = entry;
@@ -3357,7 +3372,7 @@ var P;
                 });
             }
             applyCloudVariablesSocket(stage, id) {
-                const handler = new P.ext.cloud.WebSocketCloudHandler(stage, this.MAGIC.CLOUD_DATA_SERVER, id);
+                const handler = new P.ext.cloud.WebSocketCloudHandler(stage, this.options.cloudHost, id);
                 stage.setCloudHandler(handler);
             }
             applyCloudVariablesLocalStorage(stage, id) {
@@ -3475,7 +3490,7 @@ var P;
                 return zip.generateAsync({ type: 'arraybuffer' });
             }
             fetchProject(id) {
-                const request = new P.io.Request(this.MAGIC.PROJECT_API.replace('$id', id));
+                const request = new P.io.Request(this.options.projectHost.replace('$id', id));
                 return request
                     .ignoreErrors()
                     .load('blob')
@@ -3605,6 +3620,9 @@ var P;
             imageSmoothing: false,
             focusOnLoad: true,
             spriteFencing: false,
+            projectHost: 'https://projects.scratch.mit.edu/$id',
+            cloudHost: 'wss://stratus.garbomuffin.com',
+            cloudHistoryHost: 'https://scratch.garbomuffin.com/cloud-proxy/logs/$id?limit=100'
         };
         player_1.Player = Player;
         class ErrorHandler {
@@ -4150,6 +4168,12 @@ var P;
                 };
             };
             var startSound = function (sound) {
+                for (const s of S.activeSounds) {
+                    if (s.node === sound.source) {
+                        s.stopped = true;
+                        break;
+                    }
+                }
                 const node = sound.createSourceNode();
                 applySoundEffects(node);
                 node.connect(S.getAudioNode());
@@ -6506,7 +6530,7 @@ var P;
                     if (this.rows.length === 0) {
                         this.addRow();
                     }
-                    const height = this.rows[0].element.offsetHeight;
+                    const height = this.rows[0].element.offsetHeight / this.stage.zoom;
                     if (height === 0) {
                         return 0;
                     }
@@ -6992,11 +7016,11 @@ var P;
                     this.potentialNumber = true;
                     this.flags = 0;
                 }
-                enableFlag(n) {
-                    this.flags &= n;
+                enableFlag(flag) {
+                    this.flags |= flag;
                 }
-                hasFlag(n) {
-                    return this.flags & n;
+                hasFlag(flag) {
+                    return (this.flags & flag) !== 0;
                 }
                 toString() {
                     return this.source;
@@ -7047,7 +7071,7 @@ var P;
                     return this.target.stage.cloudVariables.indexOf(this.getField(field)) > -1;
                 }
                 getListScope(field) {
-                    return this.compiler.findVariable(this.compiler.getVariableField(this.block, field)).scope;
+                    return this.compiler.findList(this.compiler.getVariableField(this.block, field)).scope;
                 }
                 asType(input, type) {
                     return this.compiler.asType(input, type);
@@ -7399,6 +7423,8 @@ var P;
                 getNewState() {
                     return {
                         isWarp: false,
+                        isProcedure: false,
+                        argumentNames: []
                     };
                 }
                 compileStack(startingBlock) {
@@ -8265,12 +8291,22 @@ var P;
     statementLibrary['looks_hideallsprites'] = noopStatement;
     statementLibrary['looks_setstretchto'] = noopStatement;
     inputLibrary['argument_reporter_boolean'] = function (util) {
-        const VALUE = util.sanitizedString(util.getField('VALUE'));
-        return util.booleanInput(util.asType(`C.args[${VALUE}]`, 'boolean'));
+        const VALUE = util.getField('VALUE');
+        if (!util.compiler.state.isProcedure || util.compiler.state.argumentNames.indexOf(VALUE) === -1) {
+            const lowerCaseName = VALUE.toLowerCase();
+            if (lowerCaseName === 'is compiled?' || lowerCaseName === 'is forkphorus?') {
+                return util.booleanInput('true');
+            }
+            return util.numberInput('0');
+        }
+        return util.booleanInput(util.asType(`C.args[${util.sanitizedString(VALUE)}]`, 'boolean'));
     };
     inputLibrary['argument_reporter_string_number'] = function (util) {
-        const VALUE = util.sanitizedString(util.getField('VALUE'));
-        return util.anyInput(`C.args[${VALUE}]`);
+        const VALUE = util.getField('VALUE');
+        if (!util.compiler.state.isProcedure || util.compiler.state.argumentNames.indexOf(VALUE) === -1) {
+            return util.numberInput('0');
+        }
+        return util.anyInput(`C.args[${util.sanitizedString(VALUE)}]`);
     };
     inputLibrary['control_create_clone_of_menu'] = function (util) {
         return util.fieldInput('CLONE_OPTION');
@@ -8802,6 +8838,9 @@ var P;
             const customBlockId = hat.inputs.custom_block[1];
             const mutation = compiler.blocks[customBlockId].mutation;
             const warp = typeof mutation.warp === 'string' ? mutation.warp === 'true' : mutation.warp;
+            const argumentNames = JSON.parse(mutation.argumentnames);
+            compiler.state.isProcedure = true;
+            compiler.state.argumentNames = argumentNames;
             if (warp) {
                 compiler.state.isWarp = true;
             }

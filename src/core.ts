@@ -490,9 +490,14 @@ namespace P.core {
     }
 
     setSoundFilter(name: string, value: number) {
+      // convert NaN to 0
+      // todo: NaN should never even be able to get here, see if this is necessary
+      value = value || 0;
       switch (name.toLowerCase()) {
         case 'pitch':
           this.soundFilters.pitch = value;
+          if (this.soundFilters.pitch > 360) this.soundFilters.pitch = 360;
+          if (this.soundFilters.pitch < -360) this.soundFilters.pitch = -360;
           break;
       }
     }
@@ -501,6 +506,8 @@ namespace P.core {
       switch (name.toLowerCase()) {
         case 'pitch':
           this.soundFilters.pitch += value;
+          if (this.soundFilters.pitch > 360) this.soundFilters.pitch = 360;
+          if (this.soundFilters.pitch < -360) this.soundFilters.pitch = -360;
           break;
       }
     }
@@ -582,7 +589,7 @@ namespace P.core {
      * @returns A unique ID for this bubble
      */
     say(text: string, thinking: boolean = false): number {
-      text = text.toString();
+      text = '' + text;
 
       // Empty strings disable saying anything.
       if (text.length === 0) {
@@ -959,10 +966,10 @@ namespace P.core {
       const key = e.key;
       switch (key) {
         case 'Enter': return SpecialKeys.Enter;
-        case 'ArrowLeft': return SpecialKeys.Left;
-        case 'ArrowUp': return SpecialKeys.Up;
-        case 'ArrowRight': return SpecialKeys.Right;
-        case 'ArrowDown': return SpecialKeys.Down;
+        case 'ArrowLeft': case 'Left': return SpecialKeys.Left;
+        case 'ArrowUp': case 'Up': return SpecialKeys.Up;
+        case 'ArrowRight': case 'Right': return SpecialKeys.Right;
+        case 'ArrowDown': case 'Down': return SpecialKeys.Down;
       }
       if (key.length !== 1) {
         // Additional keys that we don't care about such as volume keys (AudioVolumeUp/Down) and modifier keys (Shift)

@@ -164,6 +164,9 @@ namespace P.runtime {
     const c = parent.clone();
     self.children.splice(self.children.indexOf(parent), 0, c);
     runtime.triggerFor(c, 'whenCloned');
+    if (c.visible) {
+      VISUAL = true;
+    }
   };
 
   var getVars = function(name) {
@@ -253,6 +256,10 @@ namespace P.runtime {
   };
   var watchedDeleteLineOfList = function(list, index) {
     deleteLineOfList(list, index);
+    if (!list.modified) list.modified = true;
+  };
+  var watchedDeleteAllOfList = function(list) {
+    list.length = 0;
     if (!list.modified) list.modified = true;
   };
   var watchedInsertInList = function(list, index, value) {
@@ -468,6 +475,7 @@ namespace P.runtime {
                 base: BASE,
                 fn: procedure.fn,
                 calls: CALLS,
+                warp: WARP
               };
               return;
             }
@@ -500,10 +508,6 @@ namespace P.runtime {
     return runtime.trigger('whenSceneStarts', self.getCostumeName());
   };
 
-  var backdropChange = function() {
-    return runtime.trigger('whenBackdropChanges', self.getCostumeName());
-  };
-
   var broadcast = function(name) {
     return runtime.trigger('whenIReceive', name);
   };
@@ -529,6 +533,7 @@ namespace P.runtime {
       base: BASE,
       fn: S.fns[id],
       calls: CALLS,
+      warp: WARP
     };
   };
 
@@ -541,10 +546,11 @@ namespace P.runtime {
   }
 
   interface Thread {
-    sprite: P.core.Base,
-    base: Fn,
-    fn: Fn,
-    calls: ThreadCall[],
+    sprite: P.core.Base;
+    base: Fn;
+    fn: Fn;
+    calls: ThreadCall[];
+    warp: number;
   }
 
   export class Runtime {
@@ -556,6 +562,8 @@ namespace P.runtime {
     public interval: number;
     public isTurbo: boolean = false;
     public framerate: number = 30;
+    public currentMSecs: number = 0;
+    public whenTimerMSecs: number = 0;
 
     constructor(public stage: P.core.Stage) {
       // Fix scoping
@@ -564,7 +572,7 @@ namespace P.runtime {
     }
 
     startThread(sprite: core.Base, base: Fn, replaceExisting: boolean) {
-      const thread = {
+      const thread: Thread = {
         sprite: sprite,
         base: base,
         fn: base,
@@ -572,6 +580,7 @@ namespace P.runtime {
           args: [],
           stack: [{}],
         }],
+        warp: 0
       };
 
       // Find if this spread is already being executed.
@@ -603,12 +612,12 @@ namespace P.runtime {
           threads = sprite.listeners.whenKeyPressed[arg];
           break;
         case 'whenSceneStarts': threads = sprite.listeners.whenSceneStarts[('' + arg).toLowerCase()]; break;
-        case 'whenBackdropChanges': threads = sprite.listeners.whenBackdropChanges['' + arg]; break;
         case 'whenIReceive':
           arg = '' + arg;
           // TODO: remove toLowerCase() check?
           threads = sprite.listeners.whenIReceive[arg] || sprite.listeners.whenIReceive[arg.toLowerCase()];
           break;
+        case 'edgeActivated': threads = sprite.listeners.edgeActivated; break;
         default: throw new Error('Unknown trigger event: ' + event);
       }
       if (threads) {
@@ -636,6 +645,7 @@ namespace P.runtime {
     triggerGreenFlag() {
       this.timerStart = this.now();
       this.trigger('whenGreenFlag');
+      this.trigger('edgeActivated');
     }
 
     /**
@@ -715,6 +725,11 @@ namespace P.runtime {
       return this.baseNow + Date.now() - this.baseTime;
     }
 
+    resetTimer() {
+      this.timerStart = this.now();
+      this.whenTimerMSecs = 0;
+    }
+
     evaluateExpression(sprite: P.core.Base, fn: () => any) {
       // We will load a few runtime values for this.
       // These are the values that are most commonly used in expressions, in addition the runtime methods.
@@ -750,6 +765,7 @@ namespace P.runtime {
       }
 
       const start = Date.now();
+      this.currentMSecs = this.whenTimerMSecs = this.now();
       const queue = this.queue;
       do {
         for (THREAD = 0; THREAD < queue.length; THREAD++) {
@@ -764,7 +780,7 @@ namespace P.runtime {
             STACK = C.stack;
             R = STACK.pop();
             queue[THREAD] = undefined;
-            WARP = 0;
+            WARP = thread.warp;
 
             while (IMMEDIATE) {
               const fn = IMMEDIATE;

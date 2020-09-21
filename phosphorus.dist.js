@@ -621,8 +621,8 @@ var P;
                     whenGreenFlag: [],
                     whenIReceive: {},
                     whenKeyPressed: [],
-                    whenBackdropChanges: {},
                     whenSceneStarts: {},
+                    edgeActivated: [],
                 };
                 this.fns = [];
                 this.filters = {
@@ -755,6 +755,9 @@ var P;
                     mosaic: 0,
                     brightness: 0,
                     ghost: 0
+                };
+                this.soundFilters = {
+                    pitch: 0
                 };
             }
             setSoundFilter(name, value) {
@@ -927,7 +930,6 @@ var P;
             remove() {
                 if (this.bubbleContainer) {
                     this.stage.ui.removeChild(this.bubbleContainer);
-                    delete this.bubbleContainer;
                 }
                 if (this.node && this.isClone && !this.isStage) {
                     for (const sound of this.activeSounds) {
@@ -2163,11 +2165,13 @@ var P;
             constructor() {
                 super(...arguments);
                 this.aborted = false;
+                this.retries = 0;
             }
             async try(handle) {
-                const MAX_ATTEMPST = 4;
+                const MAX_ATTEMPTS = 4;
                 let lastErr;
-                for (let i = 0; i < MAX_ATTEMPST; i++) {
+                for (let i = 0; i < MAX_ATTEMPTS; i++) {
+                    this.retries = i;
                     try {
                         return await handle();
                     }
@@ -2261,11 +2265,11 @@ var P;
                         this.updateProgress(e);
                     };
                     xhr.onerror = (err) => {
-                        reject(new Error(`Error while downloading ${this.url} (error) (${xhr.status}/${xhr.statusText}/${this.aborted}/${xhr.readyState})`));
+                        reject(new Error(`Error while downloading ${this.url} (error) (r=${this.retries} s=${xhr.readyState}/${xhr.status}/${xhr.statusText})`));
                     };
                     xhr.onabort = (err) => {
                         this.aborted = true;
-                        reject(new Error(`Error while downloading ${this.url} (abort) (${xhr.status}/${xhr.statusText}/${xhr.readyState})`));
+                        reject(new Error(`Error while downloading ${this.url} (abort)`));
                     };
                     xhr.send();
                 });
@@ -2307,7 +2311,7 @@ var P;
                         resolve(image);
                     };
                     image.onerror = (err) => {
-                        reject(new Error('Failed to load image: ' + image.src));
+                        reject(new Error(`Failed to load image: ${image.src} (r=${this.retries})`));
                     };
                     image.crossOrigin = 'anonymous';
                     setTimeout(() => {
@@ -2939,7 +2943,7 @@ var P;
                 this.title = null;
             }
             load() {
-                return new P.io.Request('https://scratch.garbomuffin.com/proxy/projects/$id'.replace('$id', this.id))
+                return new P.io.Request('https://trampoline.turbowarp.org/proxy/projects/$id'.replace('$id', this.id))
                     .ignoreErrors()
                     .load('json')
                     .then((data) => {
@@ -3152,6 +3156,13 @@ var P;
                 this.stage.runtime.isTurbo = this.options.turbo;
                 this.stage.useSpriteFencing = this.options.spriteFencing;
                 this.stage.renderer.imageSmoothingEnabled = this.options.imageSmoothing;
+            }
+            generateUsernameIfMissing() {
+                if (!this.options.username) {
+                    this.setOptions({
+                        username: 'player' + Math.random().toString().substr(2, 5)
+                    });
+                }
             }
             throwWithoutStage() {
                 if (!this.stage) {
@@ -3372,6 +3383,7 @@ var P;
                 });
             }
             applyCloudVariablesSocket(stage, id) {
+                this.generateUsernameIfMissing();
                 const handler = new P.ext.cloud.WebSocketCloudHandler(stage, this.options.cloudHost, id);
                 stage.setCloudHandler(handler);
             }
@@ -3543,6 +3555,18 @@ var P;
                         if (this.isScratch1Project(buffer)) {
                             buffer = await this.convertScratch1Project(buffer);
                         }
+                        else {
+                            const zip = await JSZip.loadAsync(buffer);
+                            const projectJSON = zip.file('project.json');
+                            if (!projectJSON) {
+                                throw new Error('zip is missing project.json');
+                            }
+                            const projectDataText = await projectJSON.async('text');
+                            const projectData = JSON.parse(projectDataText);
+                            if (this.determineProjectType(projectData) === 'sb3') {
+                                return new P.sb3.SB3FileLoader(buffer);
+                            }
+                        }
                         return new P.sb2.SB2FileLoader(buffer);
                     }
                 };
@@ -3609,7 +3633,7 @@ var P;
         }
         Player.DEFAULT_OPTIONS = {
             autoplayPolicy: 'always',
-            cloudVariables: 'once',
+            cloudVariables: 'ws',
             fps: 30,
             theme: 'light',
             turbo: false,
@@ -3621,8 +3645,8 @@ var P;
             focusOnLoad: true,
             spriteFencing: false,
             projectHost: 'https://projects.scratch.mit.edu/$id',
-            cloudHost: 'wss://stratus.garbomuffin.com',
-            cloudHistoryHost: 'https://scratch.garbomuffin.com/cloud-proxy/logs/$id?limit=100'
+            cloudHost: 'wss://stratus.turbowarp.org',
+            cloudHistoryHost: 'https://trampoline.turbowarp.org/cloud-proxy/logs/$id?limit=100'
         };
         player_1.Player = Player;
         class ErrorHandler {
@@ -3924,6 +3948,9 @@ var P;
             const c = parent.clone();
             self.children.splice(self.children.indexOf(parent), 0, c);
             runtime.triggerFor(c, 'whenCloned');
+            if (c.visible) {
+                VISUAL = true;
+            }
         };
         var getVars = function (name) {
             return self.vars[name] !== undefined ? self.vars : S.vars;
@@ -4015,6 +4042,11 @@ var P;
         };
         var watchedDeleteLineOfList = function (list, index) {
             deleteLineOfList(list, index);
+            if (!list.modified)
+                list.modified = true;
+        };
+        var watchedDeleteAllOfList = function (list) {
+            list.length = 0;
             if (!list.modified)
                 list.modified = true;
         };
@@ -4213,6 +4245,7 @@ var P;
                                     base: BASE,
                                     fn: procedure.fn,
                                     calls: CALLS,
+                                    warp: WARP
                                 };
                                 return;
                             }
@@ -4243,9 +4276,6 @@ var P;
         var sceneChange = function () {
             return runtime.trigger('whenSceneStarts', self.getCostumeName());
         };
-        var backdropChange = function () {
-            return runtime.trigger('whenBackdropChanges', self.getCostumeName());
-        };
         var broadcast = function (name) {
             return runtime.trigger('whenIReceive', name);
         };
@@ -4270,6 +4300,7 @@ var P;
                 base: BASE,
                 fn: S.fns[id],
                 calls: CALLS,
+                warp: WARP
             };
         };
         class Runtime {
@@ -4282,6 +4313,8 @@ var P;
                 this.baseNow = 0;
                 this.isTurbo = false;
                 this.framerate = 30;
+                this.currentMSecs = 0;
+                this.whenTimerMSecs = 0;
                 this.onError = this.onError.bind(this);
                 this.step = this.step.bind(this);
             }
@@ -4294,6 +4327,7 @@ var P;
                             args: [],
                             stack: [{}],
                         }],
+                    warp: 0
                 };
                 for (let i = 0; i < this.queue.length; i++) {
                     const q = this.queue[i];
@@ -4326,12 +4360,12 @@ var P;
                     case 'whenSceneStarts':
                         threads = sprite.listeners.whenSceneStarts[('' + arg).toLowerCase()];
                         break;
-                    case 'whenBackdropChanges':
-                        threads = sprite.listeners.whenBackdropChanges['' + arg];
-                        break;
                     case 'whenIReceive':
                         arg = '' + arg;
                         threads = sprite.listeners.whenIReceive[arg] || sprite.listeners.whenIReceive[arg.toLowerCase()];
+                        break;
+                    case 'edgeActivated':
+                        threads = sprite.listeners.edgeActivated;
                         break;
                     default: throw new Error('Unknown trigger event: ' + event);
                 }
@@ -4352,6 +4386,7 @@ var P;
             triggerGreenFlag() {
                 this.timerStart = this.now();
                 this.trigger('whenGreenFlag');
+                this.trigger('edgeActivated');
             }
             start() {
                 this.isRunning = true;
@@ -4410,6 +4445,10 @@ var P;
             now() {
                 return this.baseNow + Date.now() - this.baseTime;
             }
+            resetTimer() {
+                this.timerStart = this.now();
+                this.whenTimerMSecs = 0;
+            }
             evaluateExpression(sprite, fn) {
                 self = this.stage;
                 runtime = this;
@@ -4435,6 +4474,7 @@ var P;
                     audioContext.resume();
                 }
                 const start = Date.now();
+                this.currentMSecs = this.whenTimerMSecs = this.now();
                 const queue = this.queue;
                 do {
                     for (THREAD = 0; THREAD < queue.length; THREAD++) {
@@ -4448,7 +4488,7 @@ var P;
                             STACK = C.stack;
                             R = STACK.pop();
                             queue[THREAD] = undefined;
-                            WARP = 0;
+                            WARP = thread.warp;
                             while (IMMEDIATE) {
                                 const fn = IMMEDIATE;
                                 IMMEDIATE = null;
@@ -4910,7 +4950,7 @@ var P;
                     }
                     object.name = data.objName;
                     object.costumes = costumes;
-                    object.currentCostumeIndex = data.currentCostumeIndex;
+                    object.currentCostumeIndex = Math.floor(data.currentCostumeIndex);
                     sounds.forEach((sound) => sound && object.addSound(sound));
                     if (isStage) {
                     }
@@ -7129,19 +7169,7 @@ var P;
                 updateBubble() {
                     this.writeLn('if (S.saying) S.updateBubble()');
                 }
-                wait(seconds) {
-                    this.writeLn('save();');
-                    this.writeLn('R.start = runtime.now();');
-                    this.writeLn(`R.duration = ${seconds}`);
-                    this.writeLn('var first = true;');
-                    const label = this.addLabel();
-                    this.writeLn('if (runtime.now() - R.start < R.duration * 1000 || first) {');
-                    this.writeLn('  var first;');
-                    this.forceQueue(label);
-                    this.writeLn('}');
-                    this.writeLn('restore();');
-                }
-                sleepUntilSettles(source) {
+                waitUntilSettles(source) {
                     this.writeLn('save();');
                     this.writeLn('R.resume = false;');
                     this.writeLn('var localR = R;');
@@ -7150,6 +7178,15 @@ var P;
                     this.writeLn('  .catch(function() { localR.resume = true; });');
                     const label = this.addLabel();
                     this.writeLn('if (!R.resume) {');
+                    this.forceQueue(label);
+                    this.writeLn('}');
+                    this.writeLn('restore();');
+                }
+                waitOneTick() {
+                    this.writeLn('save();');
+                    this.writeLn('R.start = runtime.currentMSecs;');
+                    const label = this.addLabel();
+                    this.writeLn('if (runtime.currentMSecs === R.start) {');
                     this.forceQueue(label);
                     this.writeLn('}');
                     this.writeLn('restore();');
@@ -7184,12 +7221,15 @@ var P;
                 constructor(target) {
                     this.labelCount = 0;
                     this.needsMusic = false;
-                    this.costumeNames = new Set();
+                    this.costumeAndSoundNames = new Set();
                     this.target = target;
                     this.data = target.sb3data;
                     this.blocks = this.data.blocks;
                     for (const costume of target.costumes) {
-                        this.costumeNames.add(costume.name);
+                        this.costumeAndSoundNames.add(costume.name);
+                    }
+                    for (const sound of target.sounds) {
+                        this.costumeAndSoundNames.add(sound.name);
                     }
                 }
                 getHatBlocks() {
@@ -7309,8 +7349,8 @@ var P;
                 isStringLiteralPotentialNumber(text) {
                     return /\d|true|false|Infinity/.test(text);
                 }
-                isCostumeName(text) {
-                    return this.costumeNames.has(text);
+                isNameOfCostumeOrSound(text) {
+                    return this.costumeAndSoundNames.has(text);
                 }
                 compileNativeInput(native, desiredType) {
                     const type = native[0];
@@ -7330,7 +7370,7 @@ var P;
                         }
                         case 10: {
                             const value = native[1];
-                            if (desiredType !== 'string' && /\d|Infinity/.test(value) && !this.isCostumeName(value)) {
+                            if (desiredType !== 'string' && /\d|Infinity/.test(value) && !this.isNameOfCostumeOrSound(value)) {
                                 const number = +value;
                                 if (number.toString() === value) {
                                     if (!isNaN(number)) {
@@ -7548,6 +7588,7 @@ var P;
     };
     statementLibrary['control_delete_this_clone'] = function (util) {
         util.writeLn('if (S.isClone) {');
+        util.visual('visible');
         util.writeLn('  S.remove();');
         util.writeLn('  var i = self.children.indexOf(S);');
         util.writeLn('  if (i !== -1) self.children.splice(i, 1);');
@@ -7671,12 +7712,13 @@ var P;
     };
     statementLibrary['control_wait'] = function (util) {
         const DURATION = util.getInput('DURATION', 'any');
+        util.visual('always');
         util.writeLn('save();');
-        util.writeLn('R.start = runtime.now();');
+        util.writeLn('R.start = runtime.currentMSecs;');
         util.writeLn(`R.duration = ${DURATION};`);
         util.writeLn(`var first = true;`);
         const label = util.addLabel();
-        util.writeLn('if (runtime.now() - R.start < R.duration * 1000 || first) {');
+        util.writeLn('if (runtime.currentMSecs - R.start < R.duration * 1000 || first) {');
         util.writeLn('  var first;');
         util.forceQueue(label);
         util.writeLn('}');
@@ -7720,7 +7762,7 @@ var P;
     };
     statementLibrary['data_deletealloflist'] = function (util) {
         const LIST = util.getListReference('LIST');
-        util.writeLn(`${LIST}.length = 0;`);
+        util.writeLn(`watchedDeleteAllOfList(${LIST});`);
     };
     statementLibrary['data_deleteoflist'] = function (util) {
         const LIST = util.getListReference('LIST');
@@ -7832,7 +7874,7 @@ var P;
     statementLibrary['looks_nextbackdrop'] = function (util) {
         util.writeLn('self.showNextCostume();');
         util.visual('always');
-        util.writeLn('var threads = backdropChange();');
+        util.writeLn('var threads = sceneChange();');
         util.writeLn('if (threads.indexOf(BASE) !== -1) {return;}');
     };
     statementLibrary['looks_nextcostume'] = function (util) {
@@ -7881,7 +7923,7 @@ var P;
         const BACKDROP = util.getInput('BACKDROP', 'any');
         util.writeLn(`self.setCostume(${BACKDROP});`);
         util.visual('always');
-        util.writeLn('var threads = backdropChange();');
+        util.writeLn('var threads = sceneChange();');
         util.writeLn('if (threads.indexOf(BASE) !== -1) {return;}');
     };
     statementLibrary['looks_switchcostumeto'] = function (util) {
@@ -8140,6 +8182,7 @@ var P;
         util.writeLn('S.penColor.toHSLA();');
         util.writeLn(`S.penColor.x = ${HUE} * 360 / 200;`);
         util.writeLn('S.penColor.y = 100;');
+        util.writeLn('S.penColor.a = 1;');
     };
     statementLibrary['pen_setPenShadeToNumber'] = function (util) {
         const SHADE = util.getInput('SHADE', 'number');
@@ -8182,11 +8225,13 @@ var P;
         const EFFECT = util.sanitizedString(util.getField('EFFECT'));
         const VALUE = util.getInput('VALUE', 'number');
         util.writeLn(`S.changeSoundFilter(${EFFECT}, ${VALUE});`);
+        util.waitOneTick();
     };
     statementLibrary['sound_changevolumeby'] = function (util) {
         const VOLUME = util.getInput('VOLUME', 'number');
         util.writeLn(`S.volume = Math.max(0, Math.min(1, S.volume + ${VOLUME} / 100));`);
         util.writeLn('if (S.node) S.node.gain.value = S.volume;');
+        util.waitOneTick();
     };
     statementLibrary['sound_cleareffects'] = function (util) {
         util.writeLn('S.resetSoundFilters();');
@@ -8223,11 +8268,13 @@ var P;
         const EFFECT = util.sanitizedString(util.getField('EFFECT'));
         const VALUE = util.getInput('VALUE', 'number');
         util.writeLn(`S.setSoundFilter(${EFFECT}, ${VALUE});`);
+        util.waitOneTick();
     };
     statementLibrary['sound_setvolumeto'] = function (util) {
         const VOLUME = util.getInput('VOLUME', 'number');
         util.writeLn(`S.volume = Math.max(0, Math.min(1, ${VOLUME} / 100));`);
         util.writeLn('if (S.node) S.node.gain.value = S.volume;');
+        util.waitOneTick();
     };
     statementLibrary['sound_stopallsounds'] = function (util) {
         if (P.audio.context) {
@@ -8250,7 +8297,7 @@ var P;
         util.visual('always');
     };
     statementLibrary['sensing_resettimer'] = function (util) {
-        util.writeLn('runtime.timerStart = runtime.now();');
+        util.writeLn('runtime.resetTimer();');
     };
     statementLibrary['sensing_setdragmode'] = function (util) {
         const DRAG_MODE = util.getField('DRAG_MODE');
@@ -8274,7 +8321,7 @@ var P;
     statementLibrary['text2speech_speakAndWait'] = function (util) {
         const WORDS = util.getInput('WORDS', 'string');
         util.stage.initTextToSpeech();
-        util.sleepUntilSettles(`self.tts.speak(${WORDS})`);
+        util.waitUntilSettles(`self.tts.speak(${WORDS})`);
     };
     statementLibrary['videoSensing_videoToggle'] = function (util) {
         const VIDEO_STATE = util.getInput('VIDEO_STATE', 'string');
@@ -8663,11 +8710,11 @@ var P;
     };
     hatLibrary['event_whenbackdropswitchesto'] = {
         handle(util) {
-            const BACKDROP = util.getField('BACKDROP');
-            if (!util.target.listeners.whenBackdropChanges[BACKDROP]) {
-                util.target.listeners.whenBackdropChanges[BACKDROP] = [];
+            const BACKDROP = util.getField('BACKDROP').toLowerCase();
+            if (!util.target.listeners.whenSceneStarts[BACKDROP]) {
+                util.target.listeners.whenSceneStarts[BACKDROP] = [];
             }
-            util.target.listeners.whenBackdropChanges[BACKDROP].push(util.startingFunction);
+            util.target.listeners.whenSceneStarts[BACKDROP].push(util.startingFunction);
         },
     };
     hatLibrary['event_whenbroadcastreceived'] = {
@@ -8690,12 +8737,12 @@ var P;
             const VALUE = compiler.compileInput(hat, 'VALUE', 'number');
             let executeWhen = 'false';
             let stallUntil = 'false';
-            switch (WHENGREATERTHANMENU) {
-                case 'TIMER':
-                    executeWhen = `(runtime.now() - runtime.timerStart) / 1000 > ${VALUE}`;
-                    stallUntil = `runtime.timerStart !== R.timerStart || (runtime.now() - runtime.timerStart) / 1000 <= ${VALUE}`;
+            switch (WHENGREATERTHANMENU.toLowerCase()) {
+                case 'timer':
+                    executeWhen = `runtime.whenTimerMSecs / 1000 > ${VALUE}`;
+                    stallUntil = `runtime.whenTimerMSecs / 1000 <= ${VALUE}`;
                     break;
-                case 'LOUDNESS':
+                case 'loudness':
                     compiler.target.stage.initMicrophone();
                     executeWhen = `self.microphone.getLoudness() > ${VALUE}`;
                     stallUntil = `self.microphone.getLoudness() <= ${VALUE}`;
@@ -8710,18 +8757,12 @@ var P;
             return source;
         },
         postcompile(compiler, source, hat) {
-            const WHENGREATERTHANMENU = compiler.getField(hat, 'WHENGREATERTHANMENU');
-            switch (WHENGREATERTHANMENU) {
-                case 'TIMER':
-                    source += 'R.timerStart = runtime.timerStart;\n';
-                    break;
-            }
             source += '}\n';
             source += `forceQueue(${compiler.target.fns.length});`;
             return source;
         },
         handle(util) {
-            util.target.listeners.whenGreenFlag.push(util.startingFunction);
+            util.target.listeners.edgeActivated.push(util.startingFunction);
         },
     };
     hatLibrary['event_whenkeypressed'] = {

@@ -247,7 +247,8 @@ namespace P.player {
     }
 
     load() {
-      return new P.io.Request('https://scratch.garbomuffin.com/proxy/projects/$id'.replace('$id', this.id))
+      // todo: don't hardcode this URL
+      return new P.io.Request('https://trampoline.turbowarp.org/proxy/projects/$id'.replace('$id', this.id))
         .ignoreErrors() // errors are common for this request due to unshared projects (P.io.Request throws if 404), and project meta is not critical regardless
         .load('json')
         .then((data) => {
@@ -278,7 +279,7 @@ namespace P.player {
   export class Player implements ProjectPlayer {
     public static readonly DEFAULT_OPTIONS: PlayerOptions = {
       autoplayPolicy: 'always',
-      cloudVariables: 'once',
+      cloudVariables: 'ws',
       fps: 30,
       theme: 'light',
       turbo: false,
@@ -291,8 +292,8 @@ namespace P.player {
       spriteFencing: false,
       projectHost: 'https://projects.scratch.mit.edu/$id',
       // cloudHost: 'ws://localhost:9080', // for cloud-server development
-      cloudHost: 'wss://stratus.garbomuffin.com',
-      cloudHistoryHost: 'https://scratch.garbomuffin.com/cloud-proxy/logs/$id?limit=100'
+      cloudHost: 'wss://stratus.turbowarp.org',
+      cloudHistoryHost: 'https://trampoline.turbowarp.org/cloud-proxy/logs/$id?limit=100'
     };
 
     public onprogress = new Slot<number>();
@@ -535,6 +536,14 @@ namespace P.player {
       this.stage.runtime.isTurbo = this.options.turbo;
       this.stage.useSpriteFencing = this.options.spriteFencing;
       (this.stage.renderer as P.renderer.canvas2d.ProjectRenderer2D).imageSmoothingEnabled = this.options.imageSmoothing;
+    }
+
+    generateUsernameIfMissing() {
+      if (!this.options.username) {
+        this.setOptions({
+          username: 'player' + Math.random().toString().substr(2, 5)
+        });
+      }
     }
 
     // COMMON OPERATIONS
@@ -804,6 +813,7 @@ namespace P.player {
     }
 
     private applyCloudVariablesSocket(stage: P.core.Stage, id: string) {
+      this.generateUsernameIfMissing();
       const handler = new P.ext.cloud.WebSocketCloudHandler(stage, this.options.cloudHost, id);
       stage.setCloudHandler(handler);
     }
@@ -1021,8 +1031,9 @@ namespace P.player {
         // When downloaded from scratch.mit.edu, there are two types of projects:
         // 1. "JSON projects" which are only the project.json of a sb2 or sb3 file.
         //    This is most projects, especially as this is the only format of Scratch 3 projects.
-        // 2. "Binary projects" which are full binary .sb or .sb2 files.
-        //    As an example: https://scratch.mit.edu/projects/250740608/
+        // 2. "Binary projects" which are full binary .sb, .sb2, or .sb3 files. Examples:
+        //    https://scratch.mit.edu/projects/250740608/ (sb2)
+        //    https://scratch.mit.edu/projects/418795494/ (sb3)
 
         try {
           // We will try to read the project as JSON text.
@@ -1041,6 +1052,18 @@ namespace P.player {
           // Scratch 1 is converted to Scratch 2.
           if (this.isScratch1Project(buffer)) {
             buffer = await this.convertScratch1Project(buffer);
+          } else {
+            // Examine project.json to determine project type.
+            const zip = await JSZip.loadAsync(buffer);
+            const projectJSON = zip.file('project.json');
+            if (!projectJSON) {
+              throw new Error('zip is missing project.json');
+            }
+            const projectDataText = await projectJSON.async('text');
+            const projectData = JSON.parse(projectDataText);
+            if (this.determineProjectType(projectData) === 'sb3') {
+              return new P.sb3.SB3FileLoader(buffer);
+            }
           }
 
           return new P.sb2.SB2FileLoader(buffer);

@@ -27,8 +27,8 @@ namespace P.core {
     whenGreenFlag: P.runtime.Fn[];
     whenIReceive: ObjectMap<P.runtime.Fn[]>;
     whenKeyPressed: P.runtime.Fn[][];
-    whenBackdropChanges: ObjectMap<P.runtime.Fn[]>;
     whenSceneStarts: ObjectMap<P.runtime.Fn[]>;
+    edgeActivated: P.runtime.Fn[];
   }
 
   export interface ActiveSound {
@@ -343,8 +343,8 @@ namespace P.core {
       whenGreenFlag: [],
       whenIReceive: {},
       whenKeyPressed: [],
-      whenBackdropChanges: {},
       whenSceneStarts: {},
+      edgeActivated: [],
     };
     public fns: P.runtime.Fn[] = [];
     public filters: Filters = {
@@ -486,6 +486,9 @@ namespace P.core {
         mosaic: 0,
         brightness: 0,
         ghost: 0
+      };
+      this.soundFilters = {
+        pitch: 0
       };
     }
 
@@ -675,8 +678,6 @@ namespace P.core {
     remove() {
       if (this.bubbleContainer) {
         this.stage.ui.removeChild(this.bubbleContainer);
-        // I don't think doing this is necessary.
-        delete this.bubbleContainer;
       }
       if (this.node && this.isClone && !this.isStage) {
         // Continue playing sounds started with "start sound" after this sprite has been removed.

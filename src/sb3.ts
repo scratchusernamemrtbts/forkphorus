@@ -1392,25 +1392,9 @@ namespace P.sb3.compiler {
     }
 
     /**
-     * Writes JS to pause the script for a known duration of time.
-     */
-    wait(seconds: string) {
-      this.writeLn('save();');
-      this.writeLn('R.start = runtime.now();');
-      this.writeLn(`R.duration = ${seconds}`);
-      this.writeLn('var first = true;');
-      const label = this.addLabel();
-      this.writeLn('if (runtime.now() - R.start < R.duration * 1000 || first) {');
-      this.writeLn('  var first;');
-      this.forceQueue(label);
-      this.writeLn('}');
-      this.writeLn('restore();');
-    }
-
-    /**
      * Write JS to pause script execution until a Promise is settled (regardless of resolve/reject)
      */
-    sleepUntilSettles(source: string): void {
+    waitUntilSettles(source: string): void {
       this.writeLn('save();');
       this.writeLn('R.resume = false;');
       this.writeLn('var localR = R;');
@@ -1419,6 +1403,19 @@ namespace P.sb3.compiler {
       this.writeLn('  .catch(function() { localR.resume = true; });');
       const label = this.addLabel();
       this.writeLn('if (!R.resume) {');
+      this.forceQueue(label);
+      this.writeLn('}');
+      this.writeLn('restore();');
+    }
+
+    /**
+     * Write JS to pause script execution for one tick.
+     */
+    waitOneTick() {
+      this.writeLn('save();');
+      this.writeLn('R.start = runtime.currentMSecs;');
+      const label = this.addLabel();
+      this.writeLn('if (runtime.currentMSecs === R.start) {');
       this.forceQueue(label);
       this.writeLn('}');
       this.writeLn('restore();');
@@ -1521,17 +1518,19 @@ namespace P.sb3.compiler {
      */
     public needsMusic: boolean = false;
     /**
-     * Set of the names of all costumes in this sprite.
-     * This affects some optimizations.
+     * Set of the names of all costumes and sounds in the sprite.
      */
-    public costumeNames: Set<string> = new Set();
+    public costumeAndSoundNames: Set<string> = new Set();
 
     constructor(target: Target) {
       this.target = target;
       this.data = target.sb3data;
       this.blocks = this.data.blocks;
       for (const costume of target.costumes) {
-        this.costumeNames.add(costume.name);
+        this.costumeAndSoundNames.add(costume.name);
+      }
+      for (const sound of target.sounds) {
+        this.costumeAndSoundNames.add(sound.name);
       }
     }
 
@@ -1722,10 +1721,10 @@ namespace P.sb3.compiler {
     }
 
     /**
-     * Determine whether some text is used as the name of a costume.
+     * Determine whether text is the name of a costume or a sound.
      */
-    isCostumeName(text: string) {
-      return this.costumeNames.has(text);
+    isNameOfCostumeOrSound(text: string): boolean {
+      return this.costumeAndSoundNames.has(text);
     }
 
     /**
@@ -1757,8 +1756,8 @@ namespace P.sb3.compiler {
           // Do not attempt any conversions if:
           //  - desired type is string
           //  - value does not appear to be number-like
-          //  - this is the name of a costume (as that breaks setCostume #264)
-          if (desiredType !== 'string' && /\d|Infinity/.test(value) && !this.isCostumeName(value)) {
+          //  - this is the name of a costume or sound (https://github.com/forkphorus/forkphorus/issues/264)
+          if (desiredType !== 'string' && /\d|Infinity/.test(value) && !this.isNameOfCostumeOrSound(value)) {
             const number = +value;
             // If the stringification of the number is not the same as the original value, do not convert.
             // This fixes issues where the stringification is used instead of the number itself.
@@ -2091,6 +2090,7 @@ namespace P.sb3.compiler {
   };
   statementLibrary['control_delete_this_clone'] = function(util) {
     util.writeLn('if (S.isClone) {');
+    util.visual('visible');
     util.writeLn('  S.remove();');
     util.writeLn('  var i = self.children.indexOf(S);');
     util.writeLn('  if (i !== -1) self.children.splice(i, 1);');
@@ -2211,12 +2211,13 @@ namespace P.sb3.compiler {
   };
   statementLibrary['control_wait'] = function(util) {
     const DURATION = util.getInput('DURATION', 'any');
+    util.visual('always');
     util.writeLn('save();');
-    util.writeLn('R.start = runtime.now();');
+    util.writeLn('R.start = runtime.currentMSecs;');
     util.writeLn(`R.duration = ${DURATION};`);
     util.writeLn(`var first = true;`);
     const label = util.addLabel();
-    util.writeLn('if (runtime.now() - R.start < R.duration * 1000 || first) {');
+    util.writeLn('if (runtime.currentMSecs - R.start < R.duration * 1000 || first) {');
     util.writeLn('  var first;');
     util.forceQueue(label);
     util.writeLn('}');
@@ -2259,7 +2260,7 @@ namespace P.sb3.compiler {
   };
   statementLibrary['data_deletealloflist'] = function(util) {
     const LIST = util.getListReference('LIST');
-    util.writeLn(`${LIST}.length = 0;`);
+    util.writeLn(`watchedDeleteAllOfList(${LIST});`);
   };
   statementLibrary['data_deleteoflist'] = function(util) {
     const LIST = util.getListReference('LIST');
@@ -2369,7 +2370,7 @@ namespace P.sb3.compiler {
   statementLibrary['looks_nextbackdrop'] = function(util) {
     util.writeLn('self.showNextCostume();');
     util.visual('always');
-    util.writeLn('var threads = backdropChange();');
+    util.writeLn('var threads = sceneChange();');
     util.writeLn('if (threads.indexOf(BASE) !== -1) {return;}');
   };
   statementLibrary['looks_nextcostume'] = function(util) {
@@ -2419,7 +2420,7 @@ namespace P.sb3.compiler {
     const BACKDROP = util.getInput('BACKDROP', 'any');
     util.writeLn(`self.setCostume(${BACKDROP});`);
     util.visual('always');
-    util.writeLn('var threads = backdropChange();');
+    util.writeLn('var threads = sceneChange();');
     util.writeLn('if (threads.indexOf(BASE) !== -1) {return;}');
   };
   statementLibrary['looks_switchcostumeto'] = function(util) {
@@ -2690,6 +2691,7 @@ namespace P.sb3.compiler {
     util.writeLn('S.penColor.toHSLA();');
     util.writeLn(`S.penColor.x = ${HUE} * 360 / 200;`);
     util.writeLn('S.penColor.y = 100;');
+    util.writeLn('S.penColor.a = 1;');
   };
   statementLibrary['pen_setPenShadeToNumber'] = function(util) {
     const SHADE = util.getInput('SHADE', 'number');
@@ -2736,11 +2738,13 @@ namespace P.sb3.compiler {
     const EFFECT = util.sanitizedString(util.getField('EFFECT'));
     const VALUE = util.getInput('VALUE', 'number');
     util.writeLn(`S.changeSoundFilter(${EFFECT}, ${VALUE});`);
+    util.waitOneTick();
   };
   statementLibrary['sound_changevolumeby'] = function(util) {
     const VOLUME = util.getInput('VOLUME', 'number');
     util.writeLn(`S.volume = Math.max(0, Math.min(1, S.volume + ${VOLUME} / 100));`);
     util.writeLn('if (S.node) S.node.gain.value = S.volume;');
+    util.waitOneTick();
   };
   statementLibrary['sound_cleareffects'] = function(util) {
     util.writeLn('S.resetSoundFilters();');
@@ -2777,11 +2781,13 @@ namespace P.sb3.compiler {
     const EFFECT = util.sanitizedString(util.getField('EFFECT'));
     const VALUE = util.getInput('VALUE', 'number');
     util.writeLn(`S.setSoundFilter(${EFFECT}, ${VALUE});`);
+    util.waitOneTick();
   };
   statementLibrary['sound_setvolumeto'] = function(util) {
     const VOLUME = util.getInput('VOLUME', 'number');
     util.writeLn(`S.volume = Math.max(0, Math.min(1, ${VOLUME} / 100));`);
     util.writeLn('if (S.node) S.node.gain.value = S.volume;');
+    util.waitOneTick();
   };
   statementLibrary['sound_stopallsounds'] = function(util) {
     if (P.audio.context) {
@@ -2807,7 +2813,7 @@ namespace P.sb3.compiler {
     util.visual('always');
   };
   statementLibrary['sensing_resettimer'] = function(util) {
-    util.writeLn('runtime.timerStart = runtime.now();');
+    util.writeLn('runtime.resetTimer();');
   };
   statementLibrary['sensing_setdragmode'] = function(util) {
     const DRAG_MODE = util.getField('DRAG_MODE');
@@ -2830,7 +2836,7 @@ namespace P.sb3.compiler {
   statementLibrary['text2speech_speakAndWait'] = function(util) {
     const WORDS = util.getInput('WORDS', 'string');
     util.stage.initTextToSpeech();
-    util.sleepUntilSettles(`self.tts.speak(${WORDS})`);
+    util.waitUntilSettles(`self.tts.speak(${WORDS})`);
   };
   statementLibrary['videoSensing_videoToggle'] = function(util) {
     const VIDEO_STATE = util.getInput('VIDEO_STATE', 'string');
@@ -3059,11 +3065,11 @@ namespace P.sb3.compiler {
       case 'tan':
         return util.numberInput(`Math.tan(${NUM} * Math.PI / 180)`);
       case 'asin':
-        return util.numberInput(`(Math.asin(${NUM}) * 180 / Math.PI)`)
+        return util.numberInput(`(Math.asin(${NUM}) * 180 / Math.PI)`);
       case 'acos':
-        return util.numberInput(`(Math.acos(${NUM}) * 180 / Math.PI)`)
+        return util.numberInput(`(Math.acos(${NUM}) * 180 / Math.PI)`);
       case 'atan':
-        return util.numberInput(`(Math.atan(${NUM}) * 180 / Math.PI)`)
+        return util.numberInput(`(Math.atan(${NUM}) * 180 / Math.PI)`);
       case 'ln':
         return util.numberInput(`Math.log(${NUM})`);
       case 'log':
@@ -3240,11 +3246,11 @@ namespace P.sb3.compiler {
   };
   hatLibrary['event_whenbackdropswitchesto'] = {
     handle(util) {
-      const BACKDROP = util.getField('BACKDROP');
-      if (!util.target.listeners.whenBackdropChanges[BACKDROP]) {
-        util.target.listeners.whenBackdropChanges[BACKDROP] = [];
+      const BACKDROP = util.getField('BACKDROP').toLowerCase();
+      if (!util.target.listeners.whenSceneStarts[BACKDROP]) {
+        util.target.listeners.whenSceneStarts[BACKDROP] = [];
       }
-      util.target.listeners.whenBackdropChanges[BACKDROP].push(util.startingFunction);
+      util.target.listeners.whenSceneStarts[BACKDROP].push(util.startingFunction);
     },
   };
   hatLibrary['event_whenbroadcastreceived'] = {
@@ -3268,14 +3274,12 @@ namespace P.sb3.compiler {
 
       let executeWhen = 'false';
       let stallUntil = 'false';
-      switch (WHENGREATERTHANMENU) {
-        case 'TIMER':
-          executeWhen = `(runtime.now() - runtime.timerStart) / 1000 > ${VALUE}`;
-          // wait until the timer was reset or the value changed to be less than the timer
-          // waiting until a reset matters for some low numbers where timer might never actually be eg. 0 in some rare instances
-          stallUntil = `runtime.timerStart !== R.timerStart || (runtime.now() - runtime.timerStart) / 1000 <= ${VALUE}`;
+      switch (WHENGREATERTHANMENU.toLowerCase()) {
+        case 'timer':
+          executeWhen = `runtime.whenTimerMSecs / 1000 > ${VALUE}`;
+          stallUntil = `runtime.whenTimerMSecs / 1000 <= ${VALUE}`;
           break;
-        case 'LOUDNESS':
+        case 'loudness':
           compiler.target.stage.initMicrophone();
           executeWhen = `self.microphone.getLoudness() > ${VALUE}`;
           stallUntil = `self.microphone.getLoudness() <= ${VALUE}`;
@@ -3292,20 +3296,13 @@ namespace P.sb3.compiler {
       return source;
     },
     postcompile(compiler, source, hat) {
-      const WHENGREATERTHANMENU = compiler.getField(hat, 'WHENGREATERTHANMENU');
-      switch (WHENGREATERTHANMENU) {
-        case 'TIMER':
-          // store the timerStart, this is used in precompile to determine whether the timer was reset
-          source += 'R.timerStart = runtime.timerStart;\n';
-          break;
-      }
       // finish the if/else started in precompile
       source += '}\n';
       source += `forceQueue(${compiler.target.fns.length});`;
       return source;
     },
     handle(util) {
-      util.target.listeners.whenGreenFlag.push(util.startingFunction);
+      util.target.listeners.edgeActivated.push(util.startingFunction);
     },
   };
   hatLibrary['event_whenkeypressed'] = {

@@ -372,7 +372,6 @@ namespace P.sb2 {
         this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Gloria Hallelujah'))))),
         this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Mystery Quest'))))),
         this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Permanent Marker'))))),
-        this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Scratch'))))),
       ]).then(() => undefined);
     }
 
@@ -507,10 +506,13 @@ namespace P.sb2 {
     }
 
     loadSVG(source: string): Promise<HTMLCanvasElement | HTMLImageElement> {
-      // canvg needs and actual SVG element, not the source.
       const parser = new DOMParser();
       var doc = parser.parseFromString(source, 'image/svg+xml');
       var svg = doc.documentElement as any;
+      DOMPurify.sanitize(svg, {
+        IN_PLACE: true,
+        USE_PROFILES: { svg: true }
+      });
       if (!svg.style) {
         doc = parser.parseFromString('<body>' + source, 'text/html');
         svg = doc.querySelector('svg');
@@ -533,21 +535,21 @@ namespace P.sb2 {
       document.body.removeChild(svg);
       svg.style.visibility = svg.style.position = svg.style.left = svg.style.top = '';
 
-      return new Promise<HTMLCanvasElement | HTMLImageElement>((resolve, reject) => {
-        const canvas = document.createElement('canvas');
-        canvg(canvas, new XMLSerializer().serializeToString(svg), {
-          ignoreMouse: true,
-          ignoreAnimation: true,
-          ignoreClear: true,
-          renderCallback: function() {
-            if (canvas.width === 0 || canvas.height === 0) {
-              resolve(new Image());
-              return;
-            }
-            resolve(canvas);
-          }
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('unable to get rendering context for drawing svg');
+      }
+      return canvg.Canvg.from(ctx, new XMLSerializer().serializeToString(svg), {
+        ignoreMouse: true,
+        ignoreAnimation: true,
+        ignoreClear: true,
+      })
+        .then((v) => {
+          return v.render();
+        }).then(() => {
+          return canvas;
         });
-      });
     }
 
     abstract loadMD5(hash: string, id: string, isAudio?: true): Promise<AudioBuffer>;

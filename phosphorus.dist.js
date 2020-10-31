@@ -1433,6 +1433,8 @@ var P;
             }
             moveTo() {
             }
+            gotoObject() {
+            }
             forward() {
             }
             setDirection(direction) {
@@ -3160,7 +3162,7 @@ var P;
             generateUsernameIfMissing() {
                 if (!this.options.username) {
                     this.setOptions({
-                        username: 'player' + Math.random().toString().substr(2, 5)
+                        username: 'player' + Math.random().toFixed(10).substr(2, 6)
                     });
                 }
             }
@@ -4916,7 +4918,6 @@ var P;
                     this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Gloria Hallelujah'))))),
                     this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Mystery Quest'))))),
                     this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Permanent Marker'))))),
-                    this.addTask(new P.io.PromiseTask((P.utils.settled(P.fonts.loadWebFont('Scratch'))))),
                 ]).then(() => undefined);
             }
             loadBase(data, isStage) {
@@ -5040,6 +5041,10 @@ var P;
                 const parser = new DOMParser();
                 var doc = parser.parseFromString(source, 'image/svg+xml');
                 var svg = doc.documentElement;
+                DOMPurify.sanitize(svg, {
+                    IN_PLACE: true,
+                    USE_PROFILES: { svg: true }
+                });
                 if (!svg.style) {
                     doc = parser.parseFromString('<body>' + source, 'text/html');
                     svg = doc.querySelector('svg');
@@ -5061,20 +5066,20 @@ var P;
                 patchSVG(svg, svg);
                 document.body.removeChild(svg);
                 svg.style.visibility = svg.style.position = svg.style.left = svg.style.top = '';
-                return new Promise((resolve, reject) => {
-                    const canvas = document.createElement('canvas');
-                    canvg(canvas, new XMLSerializer().serializeToString(svg), {
-                        ignoreMouse: true,
-                        ignoreAnimation: true,
-                        ignoreClear: true,
-                        renderCallback: function () {
-                            if (canvas.width === 0 || canvas.height === 0) {
-                                resolve(new Image());
-                                return;
-                            }
-                            resolve(canvas);
-                        }
-                    });
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    throw new Error('unable to get rendering context for drawing svg');
+                }
+                return canvg.Canvg.from(ctx, new XMLSerializer().serializeToString(svg), {
+                    ignoreMouse: true,
+                    ignoreAnimation: true,
+                    ignoreClear: true,
+                })
+                    .then((v) => {
+                    return v.render();
+                }).then(() => {
+                    return canvas;
                 });
             }
             load() {
@@ -6666,7 +6671,8 @@ var P;
         sb3.createList = createList;
         const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
         function fixSVGNamespace(svg) {
-            const newSVG = document.createElementNS(SVG_NAMESPACE, 'svg');
+            const newDocument = document.implementation.createHTMLDocument();
+            const newSVG = newDocument.createElementNS(SVG_NAMESPACE, 'svg');
             for (const attribute of svg.attributes) {
                 newSVG.setAttribute(attribute.name, attribute.value);
             }
@@ -6678,16 +6684,20 @@ var P;
             if (invalidNamespace) {
                 svg = fixSVGNamespace(svg);
                 if (svg.firstElementChild && svg.firstElementChild.tagName !== 'g') {
-                    const group = document.createElementNS(SVG_NAMESPACE, 'g');
-                    const transform = svg.createSVGTransform();
-                    for (const el of svg.children) {
-                        group.appendChild(el);
+                    const width = svg.width.baseVal;
+                    const height = svg.height.baseVal;
+                    if (width.unitType !== width.SVG_LENGTHTYPE_PERCENTAGE && height.unitType !== width.SVG_LENGTHTYPE_PERCENTAGE) {
+                        const group = document.createElementNS(SVG_NAMESPACE, 'g');
+                        const transform = svg.createSVGTransform();
+                        for (const el of svg.children) {
+                            group.appendChild(el);
+                        }
+                        transform.setTranslate(-width.value / 2, height.value / 2);
+                        group.transform.baseVal.appendItem(transform);
+                        costumeOptions.rotationCenterX -= width.value / 2;
+                        costumeOptions.rotationCenterY += height.value / 2;
+                        svg.appendChild(group);
                     }
-                    transform.setTranslate(-svg.width.baseVal.value / 2, svg.height.baseVal.value / 2);
-                    group.transform.baseVal.appendItem(transform);
-                    costumeOptions.rotationCenterX -= svg.width.baseVal.value / 2;
-                    costumeOptions.rotationCenterY += svg.height.baseVal.value / 2;
-                    svg.appendChild(group);
                 }
             }
             if (svg.hasAttribute('viewBox')) {
@@ -6921,10 +6931,12 @@ var P;
                 const sprites = targets.filter((i) => i.isSprite);
                 sprites.forEach((sprite) => sprite.stage = stage);
                 stage.children = sprites;
-                stage.allWatchers = this.projectData.monitors
-                    .map((data) => this.loadWatcher(data, stage))
-                    .filter((i) => i && i.valid);
-                stage.allWatchers.forEach((watcher) => watcher.init());
+                if (this.projectData.monitors) {
+                    stage.allWatchers = this.projectData.monitors
+                        .map((data) => this.loadWatcher(data, stage))
+                        .filter((i) => i && i.valid);
+                    stage.allWatchers.forEach((watcher) => watcher.init());
+                }
                 this.compileTargets(targets, stage);
                 if (this.needsMusic) {
                     await this.loadSoundbank();
@@ -9040,7 +9052,7 @@ var P;
             function getAllCloudVariables(stage) {
                 const result = {};
                 for (const variable of stage.cloudVariables) {
-                    result[variable] = stage.vars[variable] + '';
+                    result[variable] = stage.vars[variable];
                 }
                 return result;
             }
@@ -9049,10 +9061,12 @@ var P;
                 if (typeof data !== 'object' || !data) {
                     return false;
                 }
-                return typeof data.kind === 'string';
+                return typeof data.method === 'string';
             }
             function isCloudSetMessage(data) {
-                return isCloudDataMessage(data) && typeof data.var === 'string' && typeof data.value === 'string';
+                return isCloudDataMessage(data) &&
+                    typeof data.name === 'string' &&
+                    typeof data.value !== 'undefined';
             }
             class WebSocketCloudHandler extends P.ext.Extension {
                 constructor(stage, host, id) {
@@ -9094,8 +9108,8 @@ var P;
                     const variableName = this.queuedVariableChanges.shift();
                     const value = this.getVariable(variableName);
                     this.send({
-                        kind: 'set',
-                        var: variableName,
+                        method: 'set',
+                        name: variableName,
                         value: value,
                     });
                 }
@@ -9105,7 +9119,7 @@ var P;
                     this.ws.send(JSON.stringify(data));
                 }
                 getVariable(name) {
-                    return this.stage.vars[name] + '';
+                    return this.stage.vars[name];
                 }
                 setVariable(name, value) {
                     this.stage.vars[name] = value;
@@ -9130,10 +9144,9 @@ var P;
                         this.setStatusVisible(false);
                         this.failures = 0;
                         this.send({
-                            kind: 'handshake',
-                            id: this.id,
-                            username: this.username,
-                            variables: getAllCloudVariables(this.stage),
+                            method: 'handshake',
+                            project_id: this.id,
+                            user: this.username
                         });
                     };
                     this.ws.onmessage = (e) => {
@@ -9155,12 +9168,7 @@ var P;
                         const code = e.code;
                         this.ws = null;
                         console.warn(this.logPrefix, 'closed', code);
-                        if (code === 4001) {
-                            this.setStatusText('Cannot connect: Incompatible with room.');
-                            console.error(this.logPrefix, 'error: Incompatibility');
-                            this.shouldReconnect = false;
-                        }
-                        else if (code === 4002) {
+                        if (code === 4002) {
                             this.setStatusText('Username is invalid. Change your username to connect.');
                             console.error(this.logPrefix, 'error: Username');
                         }
@@ -9184,7 +9192,7 @@ var P;
                         this.failures++;
                     }
                     this.setStatusText('Connection lost, reconnecting...');
-                    const delayTime = 2 ** this.failures * 1000;
+                    const delayTime = 2 ** this.failures * 1000 * Math.random();
                     console.log(this.logPrefix, 'reconnecting in', delayTime);
                     this.reconnectTimeout = setTimeout(() => {
                         this.reconnectTimeout = null;
@@ -9200,7 +9208,7 @@ var P;
                     if (!isCloudSetMessage(data)) {
                         return;
                     }
-                    const { var: variableName, value } = data;
+                    const { name: variableName, value } = data;
                     if (this.stage.cloudVariables.indexOf(variableName) === -1) {
                         throw new Error('invalid variable name');
                     }
